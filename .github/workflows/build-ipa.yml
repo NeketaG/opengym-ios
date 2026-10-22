@@ -19,10 +19,9 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 60
-    env:
-      # ch.duartesantos.opengym belongs to the upstream project; a free Apple ID can only sign
-      # under an identifier nobody else has registered.
-      BUNDLE_ID: com.domenic.opengym
+    # The app's bundle id (com.domenic.opengym) lives in App.xcodeproj, not here: a free Apple ID
+    # can't sign upstream's ch.duartesantos.opengym, and a PRODUCT_BUNDLE_IDENTIFIER passed to
+    # xcodebuild would also land on every embedded framework, which iOS refuses to install.
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +59,6 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/App.xcarchive" \
             MARKETING_VERSION="$VER" CURRENT_PROJECT_VERSION="$BUILD" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             archive | tee xcodebuild.log | grep -E "error:|warning: .*PrintPlugin|\*\* ARCHIVE" || true
           test -d build/App.xcarchive/Products/Applications/App.app || { tail -80 xcodebuild.log; exit 1; }
@@ -72,6 +70,12 @@ jobs:
           # An .ipa is a zip with the .app under Payload/.
           rm -rf Payload && mkdir Payload
           cp -R build/App.xcarchive/Products/Applications/App.app Payload/
+          # Every bundle in the app must have its own id, or installing fails with DuplicateIdentifier.
+          for p in Payload/App.app/Info.plist Payload/App.app/Frameworks/*/Info.plist; do
+            echo "$(plutil -extract CFBundleIdentifier raw "$p")  ${p#Payload/App.app/}"
+          done | tee ids.txt
+          DUPES="$(cut -d' ' -f1 ids.txt | sort | uniq -d)"
+          [ -z "$DUPES" ] || { echo "::error::duplicate bundle ids: $DUPES"; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/artifact"
           zip -qr "$GITHUB_WORKSPACE/artifact/openGym-$VER-unsigned.ipa" Payload
           ls -lh "$GITHUB_WORKSPACE/artifact"
